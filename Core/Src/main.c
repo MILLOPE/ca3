@@ -45,23 +45,24 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ACC_WINDOW_SIZE                  26U
-#define ACC_STEP_BASE_MS                 38U
-#define ACC_STEP_FRACTION_NUM            6U
+#define ACC_CAPTURE_WINDOW_SIZE          52U
+#define HAR_MODEL_WINDOW_SIZE            AI_NETWORK_IN_1_HEIGHT
+#define ACC_STEP_BASE_MS                 19U
+#define ACC_STEP_FRACTION_NUM            3U
 #define ACC_STEP_FRACTION_DEN            13U
 
-#define GYRO_PERIOD_MS                   80U    /* 12.5 Hz */
+#define GYRO_PERIOD_MS                   1000U  /* 1 Hz */
 #define HUMIDITY_PERIOD_MS               1000U  /* 1 Hz */
 #define TEMPERATURE_PERIOD_MS            1000U  /* 1 Hz */
-#define MAGNETO_PERIOD_MS                800U   /* 1.25 Hz */
+#define MAGNETO_PERIOD_MS                1000U  /* 1 Hz */
 #define PRESSURE_PERIOD_MS               1000U  /* 1 Hz */
 #define REPORT_PERIOD_MS                 1000U
 
-#define ACC_ODR_MHZ                      26000U
-#define GYRO_ODR_MHZ                     12500U
+#define ACC_ODR_MHZ                      52000U
+#define GYRO_ODR_MHZ                     1000U
 #define HUMIDITY_ODR_MHZ                 1000U
 #define TEMPERATURE_ODR_MHZ              1000U
-#define MAGNETO_ODR_MHZ                  1250U
+#define MAGNETO_ODR_MHZ                  1000U
 #define PRESSURE_ODR_MHZ                 1000U
 
 #define INFERENCE_QUEUE_DEPTH            4U
@@ -114,10 +115,10 @@ static float g_latest_temperature_c;
 static Vec3i16_t g_latest_magneto_mgauss;
 static float g_latest_pressure_hpa;
 
-static Vec3i16_t g_acc_window[ACC_WINDOW_SIZE];
+static Vec3i16_t g_acc_window[ACC_CAPTURE_WINDOW_SIZE];
 static uint32_t g_acc_window_count;
 
-static Vec3i16_t g_inference_queue[INFERENCE_QUEUE_DEPTH][ACC_WINDOW_SIZE];
+static Vec3i16_t g_inference_queue[INFERENCE_QUEUE_DEPTH][HAR_MODEL_WINDOW_SIZE];
 static uint32_t g_inference_release_tick[INFERENCE_QUEUE_DEPTH];
 static uint8_t g_inference_head;
 static uint8_t g_inference_tail;
@@ -614,7 +615,7 @@ static void App_Init(void)
            (unsigned long)g_ai_init_failures,
            (unsigned int)ENABLE_OPTION1_EXTERNAL_TASK);
   Send_Uart_Line(g_uart_line);
-  Send_Uart_Line("ODR[Hz] acc=26 gyro=12.5 hum=1 temp=1 mag=1.25 prs=1; polling cyclic scheduler, no FIFO");
+  Send_Uart_Line("ODR[Hz] acc=52 gyro=1 hum=1 temp=1 mag=1 prs=1; polling cyclic scheduler, HAR input downsampled 52->26");
 }
 
 static void Scheduler_RunOnce(void)
@@ -744,7 +745,7 @@ static void Poll_Accelerometer(void)
   g_acc_window[g_acc_window_count].z = xyz[2];
   g_acc_window_count++;
 
-  if (g_acc_window_count >= ACC_WINDOW_SIZE)
+  if (g_acc_window_count >= ACC_CAPTURE_WINDOW_SIZE)
   {
     Queue_Inference_Window(HAL_GetTick());
     g_acc_window_count = 0U;
@@ -791,7 +792,15 @@ static void Queue_Inference_Window(uint32_t window_ready_tick)
   if (g_inference_count < INFERENCE_QUEUE_DEPTH)
   {
     uint8_t slot = g_inference_tail;
-    memcpy(g_inference_queue[slot], g_acc_window, sizeof(g_acc_window));
+    uint32_t i;
+
+    /* The assignment requires collecting 52 accelerometer samples per second.
+     * The current generated HAR model still expects 26x3 input, so use every
+     * other sample from the 52-sample capture window to preserve 1 second span. */
+    for (i = 0U; i < HAR_MODEL_WINDOW_SIZE; i++)
+    {
+      g_inference_queue[slot][i] = g_acc_window[i * 2U];
+    }
     g_inference_release_tick[slot] = window_ready_tick;
 
     g_inference_tail = (uint8_t)((g_inference_tail + 1U) % INFERENCE_QUEUE_DEPTH);
@@ -872,7 +881,9 @@ static const char *Run_HAR_Net(const Vec3i16_t *window)
     return "AI_NOT_READY";
   }
 
-  /* Model expects 26x3 float input; scheduler buffers 26x3. */
+  /* The generated model expects 26x3 float input. The scheduler now captures
+   * 52 accelerometer samples per second and Queue_Inference_Window() reduces
+   * that 52-sample span to 26 evenly spaced samples for inference. */
   for (i = 0U; i < AI_NETWORK_IN_1_HEIGHT; i++)
   {
     g_ai_input[(i * 3U) + 0U] = (ai_float)window[i].x * HAR_INPUT_SCALE;
