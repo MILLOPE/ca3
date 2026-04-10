@@ -1,0 +1,28 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+
+# Generated binaries and maps
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# Object and dependency files
+*.o
+*.d
+*.su
+*.cyclo
+*.a
+
+# STM32CubeIDE internal/generated files
+*.launch
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+*.tmp
+
+# Local analysis scratch files
+assignment3_raw_extract.txt
